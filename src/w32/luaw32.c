@@ -1551,6 +1551,131 @@ static int global_CloseWindow(lua_State *L) {
     return( 1);
 }
 
+//==================================================================== Use Named Pipe START
+const static int statusPending = 259;
+static HANDLE hPipe;
+static OVERLAPPED oOverlap;
+#define CONNECTING_STATE 0 
+#define READING_STATE 1 
+#define WRITING_STATE 2 
+#define BUF_SIZE 128 * 1024 
+static int mode = CONNECTING_STATE;
+
+static BOOL ConnectToNewClient(HANDLE hPipe, LPOVERLAPPED lpo) {
+	BOOL fConnected, fPendingIO = FALSE;
+
+	// Start an overlapped connection for this pipe instance. 
+	fConnected = ConnectNamedPipe(hPipe, lpo);
+
+	// Overlapped ConnectNamedPipe should return zero. 
+	if (fConnected)	{
+		printf("ConnectNamedPipe failed with %d.\n", GetLastError());
+		return 0;
+	}
+
+	switch (GetLastError())	{
+		// The overlapped connection in progress. 
+		case ERROR_IO_PENDING:
+			fPendingIO = TRUE;
+			break;
+
+		// Client is already connected, so signal an event. 
+		case ERROR_PIPE_CONNECTED:
+			if (SetEvent(lpo->hEvent))
+			break;
+
+		// If an error occurs during the connect operation... 
+		default: {
+			printf("ConnectNamedPipe failed with %d.\n", GetLastError());
+			return 0;
+		}
+	}
+
+	return fPendingIO;
+}
+
+static VOID DisconnectAndReconnect(BOOL reconnect) {
+	FlushFileBuffers(hPipe);
+
+	if (!DisconnectNamedPipe(hPipe)) { // Disconnect the pipe instance.
+		printf("DisconnectNamedPipe failed with %d.\n", GetLastError());
+	}
+
+	if (reconnect) {
+		ConnectToNewClient(hPipe, &oOverlap);
+	}
+}
+
+// Read Named Pipe
+static int global_ReadPipe(lua_State* L) {
+	const char* pipeFileName = luaL_checkstring(L, 1);
+
+	if (!hPipe) {
+		hPipe = CreateNamedPipe(TEXT(pipeFileName),
+			PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED | FILE_FLAG_FIRST_PIPE_INSTANCE,
+			PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_REJECT_REMOTE_CLIENTS,
+			1,
+			BUF_SIZE,
+			BUF_SIZE,
+			NMPWAIT_USE_DEFAULT_WAIT,
+			NULL);
+		ConnectToNewClient(hPipe, &oOverlap);
+		mode = CONNECTING_STATE;
+	}
+
+	if (mode == CONNECTING_STATE) {
+		if (statusPending != oOverlap.Internal) {
+			mode = READING_STATE;
+		} else {
+			lua_pushnil(L);
+		}
+	}
+
+	if (mode == READING_STATE) {
+		char readBuf[BUF_SIZE];
+		DWORD bytesRead;
+		BOOL fSuccess = ReadFile(hPipe, readBuf, BUF_SIZE, &bytesRead, NULL);
+ 
+		if (fSuccess && bytesRead != 0) { // The read operation completed successfully.
+			lua_pushstring(L, readBuf);
+			mode = WRITING_STATE;
+		} else {
+			DisconnectAndReconnect(TRUE);
+			lua_pushnil(L);
+			mode = CONNECTING_STATE;
+		}
+	}
+
+	return(1);
+}
+
+// Write Named Pipe
+static int global_WritePipe(lua_State* L) {
+	const char* response = luaL_checkstring(L, 1);
+	const DWORD responseLen = strlen(response);
+
+	if (mode == WRITING_STATE && responseLen > 0) {
+		DWORD buflen;
+		BOOL fSuccess = WriteFile(hPipe, response, responseLen, &buflen, &oOverlap);
+		FlushFileBuffers(hPipe);
+		mode = READING_STATE;
+		lua_pushstring(L, "SUCCESS");
+	} else {
+		lua_pushnil(L);
+	}
+		
+	return(1);
+}
+
+// Close Named Pipe
+static int global_ClosePipe(lua_State* L) {
+	DisconnectAndReconnect(FALSE);
+	CloseHandle(hPipe);
+	hPipe = NULL;
+
+	return(1);
+}
+//==================================================================== Use Named Pipe END
 
 /* Module exported function */
 
@@ -1783,6 +1908,9 @@ static struct luaL_Reg ls_lib[] = {
     {"GetUserName",global_GetUserName},
     {"GetCurrentProcessId",global_GetCurrentProcessId},
     {"CloseWindow",global_CloseWindow},
+	{"ReadPipe", global_ReadPipe},
+	{"WritePipe", global_WritePipe},
+	{"ClosePipe", global_ClosePipe},
     {NULL, NULL}
 };
 
