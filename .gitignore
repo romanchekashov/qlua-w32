@@ -6,6 +6,8 @@ LICENSE
 .tmp
 
 build/VC2015/.build/*
+build/VC2015/.vc/*
+.vc
 
 #VS temp files
 *.suo

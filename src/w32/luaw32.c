@@ -1558,7 +1558,7 @@ static OVERLAPPED oOverlap;
 #define CONNECTING_STATE 0 
 #define READING_STATE 1 
 #define WRITING_STATE 2 
-#define BUF_SIZE 128 * 1024 
+#define BUF_SIZE 1024 * 1024 // 1 Mb
 static int mode = CONNECTING_STATE;
 
 static BOOL ConnectToNewClient(HANDLE hPipe, LPOVERLAPPED lpo) {
